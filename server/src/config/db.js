@@ -4,16 +4,31 @@ let mongodInstance = null;
 
 const connectDB = async () => {
   const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/cafeflow';
-  
+  const isAtlas = uri.startsWith('mongodb+srv://');
+  const isProduction = process.env.NODE_ENV === 'production';
+  const timeoutMs = isProduction || isAtlas ? 10000 : 2500;
+
   try {
-    // Attempt connecting to provided MongoDB URI with 2.5s server selection timeout
+    // Attempt connecting to provided MongoDB URI (Atlas or local standalone)
     await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 2500,
+      serverSelectionTimeoutMS: timeoutMs,
     });
-    console.log(`[MongoDB] Connected to database at: ${uri}`);
-    return { type: 'standalone', uri };
+    // Mask password in logs to prevent secret leakage
+    const maskedUri = uri.replace(/\/\/([^:]+):([^@]+)@/, '//$1:****@');
+    console.log(`[MongoDB] Connected to database: ${maskedUri}`);
+    return { type: isAtlas ? 'atlas' : 'standalone', uri };
   } catch (err) {
-    console.warn(`[MongoDB] Could not connect to local standalone MongoDB (${err.message}). Starting MongoMemoryServer fallback...`);
+    if (isAtlas || isProduction) {
+      console.error(
+        `[MongoDB Atlas Error] Failed to connect to database (${err.message}). ` +
+          `Verify MONGODB_URI in Render environment and ensure MongoDB Atlas Network Access allows 0.0.0.0/0.`
+      );
+      throw err;
+    }
+
+    console.warn(
+      `[MongoDB] Could not connect to local standalone MongoDB (${err.message}). Starting MongoMemoryServer development fallback...`
+    );
     try {
       const { MongoMemoryServer } = require('mongodb-memory-server');
       mongodInstance = await MongoMemoryServer.create();

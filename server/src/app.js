@@ -10,11 +10,40 @@ const analyticsRoutes = require('./routes/analytics');
 
 const app = express();
 
-// Middleware
-app.use(cors({
-  origin: process.env.CLIENT_URL || '*',
+// Dynamic CORS configuration supporting Vercel deployments & localhost
+const rawClientUrl = process.env.CLIENT_URL || '';
+const configuredOrigins = rawClientUrl
+  ? rawClientUrl.split(',').map((u) => u.trim().replace(/\/+$/, ''))
+  : [];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (curl, server-to-server, Render healthchecks)
+    if (!origin) return callback(null, true);
+
+    const normalizedOrigin = origin.replace(/\/+$/, '');
+
+    // Allow if matching configured list, vercel preview domain, or local dev
+    if (
+      configuredOrigins.includes('*') ||
+      configuredOrigins.length === 0 ||
+      configuredOrigins.includes(normalizedOrigin) ||
+      normalizedOrigin.endsWith('.vercel.app') ||
+      normalizedOrigin.startsWith('http://localhost') ||
+      normalizedOrigin.startsWith('http://127.0.0.1')
+    ) {
+      return callback(null, true);
+    }
+
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   credentials: true,
-}));
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
