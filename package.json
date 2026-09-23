@@ -1,0 +1,14 @@
+{
+  "name": "cafeflow-ps62",
+  "version": "1.0.0",
+  "description": "CaféFlow PS62 - Modern Cafeteria Pre-Order & Crowd Management System",
+  "scripts": {
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "build": "npm --prefix client run build"
+  },
+  "keywords": ["cafeteria", "pre-order", "hackathon", "mern"],
+  "author": "CaféFlow Team",
+  "license": "ISC"
+}
