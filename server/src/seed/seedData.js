@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const User = require('../models/User');
 const MenuItem = require('../models/MenuItem');
 const PickupSlot = require('../models/PickupSlot');
@@ -233,11 +232,11 @@ const seedAll = async () => {
 
 if (require.main === module) {
   require('dotenv').config();
-  const { connectDB, closeDB } = require('../config/db');
+  const { initDB, closeDB } = require('../config/db');
 
   (async () => {
     try {
-      await connectDB();
+      await initDB();
       await seedAll();
       await closeDB();
       process.exit(0);

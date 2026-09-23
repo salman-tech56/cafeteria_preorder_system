@@ -17,5 +17,6 @@ router.get('/:id', protect, getOrderById);
 // Staff operational routes
 router.get('/', protect, requireRole('staff'), getAllOrders);
 router.patch('/:id/status', protect, requireRole('staff'), updateOrderStatus);
+router.put('/:id/status', protect, requireRole('staff'), updateOrderStatus);
 
 module.exports = router;

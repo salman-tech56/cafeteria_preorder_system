@@ -78,9 +78,9 @@ const register = async (req, res) => {
     });
   } catch (error) {
     console.error('[Register Error]:', error);
-    // MongoDB duplicate key error code 11000 safeguard
-    if (error.code === 11000) {
-      return res.status(400).json({ error: 'An account with this email address already exists.' });
+    // MySQL duplicate key error code 1062 (ER_DUP_ENTRY) safeguard
+    if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+      return res.status(400).json({ error: 'An account with this email address already exists. Please sign in instead.' });
     }
     res.status(500).json({ error: error.message || 'Server error during registration.' });
   }
@@ -134,7 +134,7 @@ const login = async (req, res) => {
 const getMe = async (req, res) => {
   try {
     // Identity is derived purely from verified JWT (req.user)
-    const user = await User.findById(req.user._id).select('-password');
+    const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ error: 'User profile not found.' });
     }

@@ -3,6 +3,8 @@ const MenuItem = require('../models/MenuItem');
 const PickupSlot = require('../models/PickupSlot');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
 
+const { getConnection } = require('../config/db');
+
 // Helper to generate unique order number: CF-YYMMDD-XXXX
 const generateOrderNumber = async () => {
   const now = new Date();
@@ -15,11 +17,11 @@ const generateOrderNumber = async () => {
   return `CF-${datePart}-${sequential}${randomSuffix.toString().slice(-2)}`;
 };
 
-// @desc    Create new order with strict stock validation & slot capacity control
+// @desc    Create new order with strict stock validation & slot capacity control using MySQL transaction
 // @route   POST /api/orders
 // @access  Protected (Authenticated Customer or Staff)
 const createOrder = async (req, res) => {
-  const decrementedItems = [];
+  let conn = null;
 
   try {
     const { items, pickupSlotId } = req.body;
@@ -39,23 +41,34 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ error: 'Please select a valid pickup slot.' });
     }
 
-    // 1. Verify Pickup Slot availability and capacity
-    const slot = await PickupSlot.findById(pickupSlotId);
-    if (!slot) {
+    conn = await getConnection();
+    await conn.beginTransaction();
+
+    // 1. Lock and validate pickup slot with FOR UPDATE
+    const [slotRows] = await conn.query(
+      `SELECT * FROM pickup_slots WHERE id = ? FOR UPDATE`,
+      [pickupSlotId]
+    );
+
+    if (slotRows.length === 0) {
+      await conn.rollback();
       return res.status(404).json({ error: 'Selected pickup slot was not found.' });
     }
 
-    if (!slot.isActive) {
+    const slot = slotRows[0];
+    if (!slot.available) {
+      await conn.rollback();
       return res.status(400).json({ error: 'Selected pickup slot is no longer active.' });
     }
 
-    if (slot.currentOrders >= slot.maxCapacity) {
+    if (slot.booked_count >= slot.capacity) {
+      await conn.rollback();
       return res.status(400).json({
-        error: `Pickup slot "${slot.slotLabel}" is already fully booked (${slot.currentOrders}/${slot.maxCapacity}). Please choose another time slot.`,
+        error: `Pickup slot "${slot.slot_label}" is already fully booked (${slot.booked_count}/${slot.capacity}). Please choose another time slot.`,
       });
     }
 
-    // 2. Validate and Atomically Decrement Stock for each item (CRITICAL: prevents overselling)
+    // 2. Lock each menu item with FOR UPDATE and validate stock
     const orderItems = [];
     let calculatedSubtotal = 0;
     let calculatedTotalGst = 0;
@@ -64,42 +77,38 @@ const createOrder = async (req, res) => {
       const itemId = requestedItem.menuItemId || requestedItem._id;
       const quantity = Math.max(1, parseInt(requestedItem.quantity, 10) || 1);
 
-      // Atomic conditional update: only decrement if stock >= quantity
-      const updatedMenuItem = await MenuItem.findOneAndUpdate(
-        {
-          _id: itemId,
-          availability: true,
-          stock: { $gte: quantity },
-        },
-        {
-          $inc: { stock: -quantity },
-        },
-        { new: true }
+      const [itemRows] = await conn.query(
+        `SELECT * FROM menu_items WHERE id = ? FOR UPDATE`,
+        [itemId]
       );
 
-      if (!updatedMenuItem) {
-        // Stock depletion or item unavailable! Rollback any previously decremented items in this transaction
-        for (const rolledBack of decrementedItems) {
-          await MenuItem.findByIdAndUpdate(rolledBack.id, {
-            $inc: { stock: rolledBack.qty },
-          });
-        }
+      if (itemRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: 'One or more requested menu items no longer exist.' });
+      }
 
-        const existingItem = await MenuItem.findById(itemId);
-        const itemName = existingItem ? existingItem.name : 'Unknown Item';
-        const remainingStock = existingItem ? existingItem.stock : 0;
+      const menuItem = itemRows[0];
+      if (!menuItem.available) {
+        await conn.rollback();
+        return res.status(400).json({ error: `"${menuItem.name}" is currently marked unavailable.` });
+      }
 
+      if (menuItem.stock < quantity) {
+        await conn.rollback();
         return res.status(400).json({
-          error: `Insufficient stock for "${itemName}". Requested: ${quantity}, Available: ${remainingStock}.`,
+          error: `Insufficient stock for "${menuItem.name}". Requested: ${quantity}, Available: ${menuItem.stock}.`,
         });
       }
 
-      // Record for rollback if subsequent item fails
-      decrementedItems.push({ id: itemId, qty: quantity });
+      // Deduct stock in transaction
+      await conn.query(
+        `UPDATE menu_items SET stock = stock - ? WHERE id = ?`,
+        [quantity, itemId]
+      );
 
-      // Pricing & GST calculation
-      const unitPrice = updatedMenuItem.basePrice;
-      const gstRate = updatedMenuItem.gstRate || 5;
+      // Calculations
+      const unitPrice = Number(menuItem.base_price);
+      const gstRate = Number(menuItem.gst_rate || 5);
       const lineBase = unitPrice * quantity;
       const lineGst = Number(((lineBase * gstRate) / 100).toFixed(2));
       const lineTotal = Number((lineBase + lineGst).toFixed(2));
@@ -108,8 +117,8 @@ const createOrder = async (req, res) => {
       calculatedTotalGst += lineGst;
 
       orderItems.push({
-        menuItem: updatedMenuItem._id,
-        name: updatedMenuItem.name,
+        menuItem: menuItem.id,
+        name: menuItem.name,
         quantity,
         unitPrice,
         gstRate,
@@ -118,81 +127,98 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // 3. Atomically Increment Pickup Slot Bookings
-    const updatedSlot = await PickupSlot.findOneAndUpdate(
-      {
-        _id: slot._id,
-        currentOrders: { $lt: slot.maxCapacity },
-      },
-      {
-        $inc: { currentOrders: 1 },
-      },
-      { new: true }
+    // 3. Increment pickup slot booked count in transaction
+    await conn.query(
+      `UPDATE pickup_slots SET booked_count = booked_count + 1 WHERE id = ?`,
+      [slot.id]
     );
 
-    if (!updatedSlot) {
-      // Slot reached capacity at the exact same millisecond - rollback items
-      for (const rolledBack of decrementedItems) {
-        await MenuItem.findByIdAndUpdate(rolledBack.id, {
-          $inc: { stock: rolledBack.qty },
-        });
-      }
-      return res.status(400).json({
-        error: `Slot "${slot.slotLabel}" reached full capacity. Please select another slot.`,
-      });
-    }
-
-    // 4. Create Order Record strictly tied to authenticated user
+    // 4. Create Order row
     const grandTotal = Number((calculatedSubtotal + calculatedTotalGst).toFixed(2));
     const orderNumber = await generateOrderNumber();
     const serverExactTimestamp = new Date();
 
-    const order = await Order.create({
-      orderNumber,
-      user: authenticatedUser._id, // Strictly authenticated user ID
-      customerName: authenticatedUser.name,
-      customerEmail: authenticatedUser.email,
-      customerPhone: authenticatedUser.phone || '',
-      items: orderItems,
-      subtotal: Number(calculatedSubtotal.toFixed(2)),
-      totalGst: Number(calculatedTotalGst.toFixed(2)),
-      grandTotal,
-      pickupSlot: slot._id,
-      slotLabel: slot.slotLabel,
-      pickupDate: slot.date,
-      status: 'Placed',
-      serverExactTimestamp,
-    });
+    const [orderResult] = await conn.query(
+      `INSERT INTO orders (
+        order_number, user_id, pickup_slot_id, customer_name, customer_email, customer_phone,
+        slot_label, pickup_date, subtotal, gst_amount, total_amount, status, placed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        orderNumber,
+        authenticatedUser._id,
+        slot.id,
+        authenticatedUser.name,
+        authenticatedUser.email,
+        authenticatedUser.phone || '',
+        slot.slot_label,
+        slot.date,
+        Number(calculatedSubtotal.toFixed(2)),
+        Number(calculatedTotalGst.toFixed(2)),
+        grandTotal,
+        'Placed',
+        serverExactTimestamp,
+      ]
+    );
 
-    // 5. Create initial OrderStatusHistory entry
-    await OrderStatusHistory.create({
-      order: order._id,
-      status: 'Placed',
-      timestamp: serverExactTimestamp,
-      updatedBy: authenticatedUser._id,
-      updatedByName: `${authenticatedUser.name} (${authenticatedUser.role})`,
-      note: 'Order placed via CaféFlow pre-order.',
-    });
+    const orderId = orderResult.insertId;
+
+    // 5. Create Order Items
+    for (const oi of orderItems) {
+      await conn.query(
+        `INSERT INTO order_items (
+          order_id, menu_item_id, item_name, quantity, unit_price, gst_rate, gst_amount, total_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          orderId,
+          oi.menuItem,
+          oi.name,
+          oi.quantity,
+          oi.unitPrice,
+          oi.gstRate,
+          oi.gstAmount,
+          oi.itemTotal,
+        ]
+      );
+    }
+
+    // 6. Create initial OrderStatusHistory entry
+    await conn.query(
+      `INSERT INTO order_status_history (
+        order_id, status, timestamp, note, updated_by, updated_by_name
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        orderId,
+        'Placed',
+        serverExactTimestamp,
+        'Order placed via CaféFlow pre-order.',
+        authenticatedUser._id,
+        `${authenticatedUser.name} (${authenticatedUser.role})`,
+      ]
+    );
+
+    // Commit ACID transaction
+    await conn.commit();
+
+    const order = await Order.findById(orderId);
 
     res.status(201).json({
       message: 'Order placed successfully!',
       order,
     });
   } catch (error) {
-    console.error('[Order createOrder Error]:', error);
-
-    // Rollback any stock decremented if unexpected exception occurred
-    for (const rolledBack of decrementedItems) {
+    if (conn) {
       try {
-        await MenuItem.findByIdAndUpdate(rolledBack.id, {
-          $inc: { stock: rolledBack.qty },
-        });
-      } catch (e) {
-        console.error('Failed to rollback item stock:', e);
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('Failed to rollback transaction:', rollbackErr);
       }
     }
-
+    console.error('[Order createOrder Error]:', error);
     res.status(500).json({ error: error.message || 'Failed to place order.' });
+  } finally {
+    if (conn) {
+      conn.release();
+    }
   }
 };
 

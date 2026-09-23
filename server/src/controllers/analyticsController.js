@@ -1,6 +1,7 @@
 const Order = require('../models/Order');
 const MenuItem = require('../models/MenuItem');
 const PickupSlot = require('../models/PickupSlot');
+const { query } = require('../config/db');
 
 // @desc    Get real-time business analytics for Staff Dashboard
 // @route   GET /api/analytics
@@ -9,12 +10,10 @@ const getAnalytics = async (req, res) => {
     const todayStr = new Date().toISOString().split('T')[0];
 
     // Filter for today's orders (non-cancelled)
-    const todayOrdersFilter = {
+    const todayOrders = await Order.find({
       pickupDate: todayStr,
       status: { $ne: 'Cancelled' },
-    };
-
-    const todayOrders = await Order.find(todayOrdersFilter);
+    });
 
     // 1. Today's customers (unique users)
     const uniqueUserIds = new Set(todayOrders.map((o) => o.user.toString()));
@@ -32,7 +31,7 @@ const getAnalytics = async (req, res) => {
     const itemStatsMap = {};
 
     todayOrders.forEach((order) => {
-      order.items.forEach((item) => {
+      (order.items || []).forEach((item) => {
         todayItemsSold += item.quantity;
         const name = item.name;
         if (!itemStatsMap[name]) {
@@ -50,7 +49,8 @@ const getAnalytics = async (req, res) => {
 
     // If fewer than 3 items ordered today, populate with general menu items for rich chart display
     if (mostOrderedFood.length < 3) {
-      const topMenuItems = await MenuItem.find({}).sort({ stock: 1 }).limit(5);
+      const allMenuItems = await MenuItem.find();
+      const topMenuItems = [...allMenuItems].sort((a, b) => a.stock - b.stock).slice(0, 5);
       topMenuItems.forEach((m) => {
         if (!mostOrderedFood.some((item) => item.name === m.name)) {
           mostOrderedFood.push({
@@ -144,7 +144,8 @@ const getAnalytics = async (req, res) => {
     });
 
     // 8. Popular Pickup Slots
-    const slots = await PickupSlot.find({ date: todayStr }).sort({ currentOrders: -1 });
+    const allSlots = await PickupSlot.find({ date: todayStr });
+    const slots = [...allSlots].sort((a, b) => b.currentOrders - a.currentOrders);
     const popularPickupSlots = slots.map((s) => ({
       id: s._id,
       slotLabel: s.slotLabel,
@@ -155,11 +156,10 @@ const getAnalytics = async (req, res) => {
     }));
 
     // 9. Low-Stock Items (< 25 portions) with smart restock priority
-    const lowStockItems = await MenuItem.find({
-      stock: { $lte: 25 },
-    })
-      .sort({ stock: 1 })
-      .select('name category stock availability basePrice');
+    const allItems = await MenuItem.find();
+    const lowStockItems = allItems
+      .filter((i) => i.stock <= 25)
+      .sort((a, b) => a.stock - b.stock);
 
     const smartLowStockAlerts = lowStockItems.map((item) => ({
       _id: item._id,
@@ -171,7 +171,7 @@ const getAnalytics = async (req, res) => {
       recommendedBatch: Math.max(20, 40 - item.stock),
     }));
 
-    res.status(200).json({
+    const responsePayload = {
       summary: {
         todayCustomers: todayCustomersCount,
         todayOrders: totalTodayOrders,
@@ -186,13 +186,29 @@ const getAnalytics = async (req, res) => {
       mostOrderedFood,
       popularPickupSlots,
       lowStockItems: smartLowStockAlerts,
-    });
+    };
+
+    res.status(200).json(responsePayload);
   } catch (error) {
     console.error('[Analytics Error]:', error);
     res.status(500).json({ error: 'Failed to generate real-time analytics.' });
   }
 };
 
+// @desc    Get today's analytics summary
+// @route   GET /api/analytics/today
+const getTodayAnalytics = async (req, res) => {
+  return getAnalytics(req, res);
+};
+
+// @desc    Get weekly analytics
+// @route   GET /api/analytics/weekly
+const getWeeklyAnalytics = async (req, res) => {
+  return getAnalytics(req, res);
+};
+
 module.exports = {
   getAnalytics,
+  getTodayAnalytics,
+  getWeeklyAnalytics,
 };

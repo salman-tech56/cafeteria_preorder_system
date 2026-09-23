@@ -1,84 +1,71 @@
-const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { query } = require('../config/db');
+const QueryBuilder = require('./QueryBuilder');
 
-// Strict RFC 5322 compatible email regex ensuring valid local part, @, domain name and TLD (min 2 chars)
-const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-
-const userSchema = new mongoose.Schema(
-  {
-    name: {
-      type: String,
-      required: [true, 'Name is required'],
-      trim: true,
-      maxlength: [100, 'Name cannot exceed 100 characters'],
-    },
-    email: {
-      type: String,
-      required: [true, 'Email is required'],
-      unique: true,
-      lowercase: true,
-      trim: true,
-      index: true,
-      validate: {
-        validator: function (v) {
-          if (!v || typeof v !== 'string') return false;
-          const trimmed = v.trim();
-          // Reject if contains spaces, consecutive dots, or doesn't match standard email format
-          if (trimmed.includes(' ') || trimmed.includes('..')) return false;
-          return EMAIL_REGEX.test(trimmed);
-        },
-        message: 'Please provide a valid email address (e.g. user@domain.com)',
-      },
-    },
-    password: {
-      type: String,
-      required: [true, 'Password is required'],
-      minlength: [6, 'Password must be at least 6 characters'],
-    },
-    role: {
-      type: String,
-      enum: ['customer', 'staff'],
-      default: 'customer',
-      required: true,
-    },
-    phone: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-// Pre-save hook: normalize email and hash password if modified
-userSchema.pre('save', async function (next) {
-  if (this.email) {
-    this.email = this.email.toLowerCase().trim();
-  }
-
-  if (!this.isModified('password')) return next();
-  try {
+class User {
+  static async create({ name, email, password, role = 'customer', phone = '' }) {
     const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (err) {
-    next(err);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const result = await query(
+      `INSERT INTO users (name, email, password, role, phone) VALUES (?, ?, ?, ?, ?)`,
+      [name.trim(), normalizedEmail, hashedPassword, role, phone || '']
+    );
+
+    return this.findById(result.insertId);
   }
-});
 
-// Compare password method
-userSchema.methods.comparePassword = async function (candidatePassword) {
-  if (!candidatePassword || !this.password) return false;
-  return bcrypt.compare(candidatePassword, this.password);
-};
+  static findOne({ email } = {}) {
+    return new QueryBuilder(async () => {
+      if (!email) return null;
+      const normalizedEmail = email.trim().toLowerCase();
+      const rows = await query(`SELECT * FROM users WHERE LOWER(email) = ? LIMIT 1`, [normalizedEmail]);
+      if (rows.length === 0) return null;
+      return this.wrapUser(rows[0]);
+    });
+  }
 
-// Omit password from toJSON
-userSchema.methods.toJSON = function () {
-  const user = this.toObject();
-  delete user.password;
-  return user;
-};
+  static findById(id) {
+    return new QueryBuilder(async () => {
+      if (!id) return null;
+      const rows = await query(`SELECT * FROM users WHERE id = ? LIMIT 1`, [id]);
+      if (rows.length === 0) return null;
+      return this.wrapUser(rows[0]);
+    });
+  }
 
-module.exports = mongoose.model('User', userSchema);
+  static async countDocuments() {
+    const rows = await query(`SELECT COUNT(*) as count FROM users`);
+    return rows[0]?.count || 0;
+  }
+
+  static async deleteMany() {
+    await query(`DELETE FROM users`);
+  }
+
+  static wrapUser(row) {
+    if (!row) return null;
+    return {
+      _id: row.id,
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      password: row.password,
+      role: row.role,
+      phone: row.phone || '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      async comparePassword(candidate) {
+        return bcrypt.compare(candidate, row.password);
+      },
+      toObject() {
+        const copy = { ...this };
+        delete copy.password;
+        return copy;
+      },
+    };
+  }
+}
+
+module.exports = User;

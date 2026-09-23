@@ -1,6 +1,6 @@
 require('dotenv').config();
 const app = require('./app');
-const { connectDB } = require('./config/db');
+const { initDB, closeDB } = require('./config/db');
 const User = require('./models/User');
 const { seedAll } = require('./seed/seedData');
 
@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 5000;
 
 async function startServer() {
   try {
-    const dbInfo = await connectDB();
+    await initDB();
 
     // Auto-seed if database is empty
     const userCount = await User.countDocuments();
@@ -22,7 +22,7 @@ async function startServer() {
     const server = app.listen(PORT, () => {
       console.log(`=========================================`);
       console.log(` ☕ CaféFlow PS62 Server running on port ${PORT}`);
-      console.log(` 📦 Database mode: ${dbInfo.type}`);
+      console.log(` 📦 Database: MySQL (${process.env.DB_NAME || 'cafeflow'} on ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306})`);
       console.log(` 👥 Demo Staff:    staff@cafeflow.com / Staff@123`);
       console.log(` 👤 Demo Customer: customer@cafeflow.com / Customer@123`);
       console.log(` 🌐 Healthcheck:   http://localhost:${PORT}/api/health`);

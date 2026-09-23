@@ -17,7 +17,7 @@ const protect = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'cafeflow_hackathon_super_secret_jwt_key_2026');
-    const user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id);
 
     if (!user) {
       return res.status(401).json({ error: 'User associated with this token no longer exists.' });

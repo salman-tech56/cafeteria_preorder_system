@@ -42,6 +42,16 @@ async function runSecurityIsolationTests() {
   };
 
   try {
+    // Ensure Customer A and B exist
+    await request(
+      { hostname: 'localhost', port: 5000, path: '/api/auth/register', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { name: 'Customer A', email: 'customera@gmail.com', password: 'Customer@123', role: 'customer' }
+    );
+    await request(
+      { hostname: 'localhost', port: 5000, path: '/api/auth/register', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+      { name: 'Customer B', email: 'customerb@gmail.com', password: 'Customer@123', role: 'customer' }
+    );
+
     // ------------------------------------------------------------------------
     // TEST 1: Customer A Login & Identity Verification
     // ------------------------------------------------------------------------
