@@ -1,193 +1,350 @@
 # CaféFlow PS62 — Cafeteria Pre-Order & Crowd Management System
 
 > **"Your Food. Your Time. Your Way."**  
-> A full-stack cafeteria pre-ordering and time-slotted pickup platform engineered to eliminate lunch rush queues, prevent food overselling through atomic stock deductions, and provide kitchen staff with real-time operational telemetry.
+> A high-performance, full-stack cafeteria pre-ordering and time-slotted pickup platform engineered to eliminate lunch rush queues, prevent food overselling through atomic MySQL transactions and row-level locks, and provide kitchen staff with real-time operational telemetry.
 
 ---
 
 ## 🏗️ Architecture & Technology Stack
 
-- **Frontend**: React 18, Vite 5, Tailwind CSS, Lucide Icons, Recharts, Axios, React Router v6
-- **Backend**: Node.js, Express.js, Mongoose, JWT (JSON Web Tokens), bcryptjs, CORS
-- **Database**: MongoDB Atlas (Cloud) / Standalone MongoDB / `mongodb-memory-server` (automatic fallback)
-- **Deployment Targets**:
-  - **Frontend**: [Vercel](https://vercel.com)
-  - **Backend**: [Render](https://render.com)
-  - **Database**: [MongoDB Atlas](https://www.mongodb.com/atlas)
+### Frontend (`client/`)
+- **Core**: React 18 (`react` ^18.3.1, `react-dom` ^18.3.1), Vite 5 (`vite` ^5.4.14)
+- **Styling**: Tailwind CSS (`tailwindcss` ^3.4.17), Autoprefixer, PostCSS
+- **State & Routing**: React Router v6 (`react-router-dom` ^6.28.2), Context API (`AuthContext`, `CartContext`)
+- **HTTP Client**: Axios (`axios` ^1.7.9) with configurable base URL and JWT Bearer interceptor
+- **Icons & Visualization**: Lucide React (`lucide-react` ^0.475.0), Recharts (`recharts` ^2.15.1)
+- **Utilities**: `clsx`, `tailwind-merge`
+
+### Backend (`server/`)
+- **Runtime & Framework**: Node.js, Express.js (`express` ^4.21.2)
+- **Database Driver & Pool**: `mysql2` (`^3.24.4`) using `mysql2/promise` with connection pooling
+- **Security & Authentication**: JSON Web Tokens (`jsonwebtoken` ^9.0.2), password hashing via `bcryptjs` (`^3.0.2`)
+- **CORS**: `cors` (`^2.8.5`) supporting dynamic origins, localhost, and Vercel deployments
+- **Environment**: `dotenv` (`^16.4.7`)
+
+### Database (`server/database/`)
+- **Engine**: MySQL 8.0
+- **Database Name**: `cafeflow`
+- **Schema**: `server/database/schema.sql` (6 relational tables with foreign keys and indexes)
+- **Seed Data**: `server/database/seed.sql` & `server/src/seed/seedData.js`
 
 ---
 
-## 🚀 Step-by-Step Production Deployment Guide
+## 🗄️ Database Schema & Relational Model
 
-### STEP 1: Set Up MongoDB Atlas Database
+The relational architecture is defined in `server/database/schema.sql`:
 
-1. **Create an Account / Log In**:
-   - Go to [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register) and create or log in to your account.
-2. **Create a Database Cluster**:
-   - Click **"Create Deployment"** and select the free **M0 Shared Cluster**.
-   - Choose a cloud provider and region closest to your users (e.g. AWS / Mumbai `ap-south-1` or Singapore `ap-southeast-1`).
-3. **Configure Database User Credentials**:
-   - Navigate to **Security ➔ Database Access**.
-   - Click **"Add New Database User"**.
-   - Select **Password Authentication**.
-   - Choose a username (e.g. `cafeflow_admin`) and a secure password.
-   - Assign the **"Read and write to any database"** built-in role.
-   - Click **"Add User"**.
-4. **Configure Network IP Access**:
-   - Navigate to **Security ➔ Network Access**.
-   - Click **"Add IP Address"**.
-   - Click **"Allow Access from Anywhere"** (`0.0.0.0/0`) so that Render can connect to your database.
-   - Click **"Confirm"**.
-5. **Copy the Connection String (`MONGODB_URI`)**:
-   - Navigate to **Database ➔ Clusters ➔ Connect**.
-   - Choose **"Drivers"** (Node.js).
-   - Copy the connection URI:
-     ```
-     mongodb+srv://<db_username>:<db_password>@cluster0.xxxx.mongodb.net/cafeflow?retryWrites=true&w=majority
-     ```
-   - Replace `<db_username>` and `<db_password>` with your database user credentials.
+```
+users (1) ─────────────< orders (many)
+                            │
+                            ├───< order_items (many) >─── (1) menu_items
+                            │
+                            ├───< order_status_history (many)
+                            │
+pickup_slots (1) ───────< orders (many)
+```
 
----
+### Tables
 
-### STEP 2: Deploy Backend to Render
+1. **`users`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `name` (VARCHAR 100)
+   - `email` (VARCHAR 191 UNIQUE)
+   - `password` (VARCHAR 255 - bcrypt hash)
+   - `role` (ENUM: `'customer'`, `'staff'`, default `'customer'`)
+   - `phone` (VARCHAR 20)
+   - `created_at`, `updated_at` (TIMESTAMP)
 
-1. **Push Repository to GitHub**:
-   - Ensure your repository is pushed to your GitHub account:
-     ```bash
-     git add .
-     git commit -m "Prepare production deployment"
-     git push origin main
-     ```
-2. **Create Web Service on Render**:
-   - Log in to your [Render Dashboard](https://dashboard.render.com).
-   - Click **"New +" ➔ "Web Service"**.
-   - Connect your GitHub repository (`cafeteria_preorder_system`).
-3. **Configure Build & Start Settings**:
-   - **Name**: `cafeflow-backend` (or your preferred name)
-   - **Region**: Choose the region closest to your MongoDB Atlas cluster (e.g., Singapore / Frankfurt / Oregon).
-   - **Branch**: `main`
-   - **Root Directory**: `server`
-   - **Runtime**: `Node`
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Plan**: `Free`
-4. **Add Environment Variables**:
-   Under **"Environment Variables"**, add the following keys:
+2. **`menu_items`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `name` (VARCHAR 150)
+   - `description` (TEXT)
+   - `category` (VARCHAR 50: `'Breakfast'`, `'Main Course'`, `'Quick Bites'`, `'Beverages'`, `'Combos'`)
+   - `base_price` (DECIMAL 10,2)
+   - `gst_rate` (DECIMAL 5,2, default 5.00%)
+   - `stock` (INT, default 0, CHECK `stock >= 0`)
+   - `available` (TINYINT(1), default 1)
+   - `image` (VARCHAR 500)
+   - `created_at`, `updated_at` (TIMESTAMP)
 
-   | Key | Value | Description |
-   | :--- | :--- | :--- |
-   | `NODE_ENV` | `production` | Enables production optimizations and error handling |
-   | `PORT` | `10000` (or leave default) | Render sets port automatically |
-   | `MONGODB_URI` | `mongodb+srv://user:pass@cluster0.../cafeflow` | Your MongoDB Atlas connection URI from Step 1 |
-   | `JWT_SECRET` | *(64-character random secure key)* | Secret for signing and verifying customer/staff JWTs |
-   | `CLIENT_URL` | `https://your-cafeflow.vercel.app` | Deployed Vercel frontend URL (can update after Step 3) |
+3. **`pickup_slots`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `slot_start` (VARCHAR 10, e.g. `'12:00'`)
+   - `slot_end` (VARCHAR 10, e.g. `'12:15'`)
+   - `slot_label` (VARCHAR 50, e.g. `'12:00 PM - 12:15 PM'`)
+   - `capacity` (INT, default 25)
+   - `booked_count` (INT, default 0)
+   - `date` (DATE)
+   - `available` (TINYINT(1), default 1)
+   - `created_at` (TIMESTAMP)
 
-5. **Deploy Service**:
-   - Click **"Create Web Service"**.
-   - Wait for the build and deployment logs to finish.
-   - Verify health: Visit `https://your-cafeflow-backend.onrender.com/api/health`. You will see `{"status":"ok","database":"connected"}`.
-   - **Copy your Render backend URL**: e.g., `https://cafeflow-backend.onrender.com`.
+4. **`orders`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `order_number` (VARCHAR 50 UNIQUE, e.g. `CF-260923-00123`)
+   - `user_id` (INT FK ➔ `users.id` ON DELETE CASCADE)
+   - `pickup_slot_id` (INT FK ➔ `pickup_slots.id` ON DELETE RESTRICT)
+   - `customer_name` (VARCHAR 100)
+   - `customer_email` (VARCHAR 191)
+   - `customer_phone` (VARCHAR 20)
+   - `slot_label` (VARCHAR 50)
+   - `pickup_date` (DATE)
+   - `subtotal` (DECIMAL 10,2)
+   - `gst_amount` (DECIMAL 10,2)
+   - `total_amount` (DECIMAL 10,2)
+   - `status` (ENUM: `'Placed'`, `'Preparing'`, `'Ready'`, `'Collected'`, `'Cancelled'`)
+   - `placed_at`, `preparing_at`, `ready_at`, `collected_at` (TIMESTAMP)
+   - `created_at`, `updated_at` (TIMESTAMP)
 
----
+5. **`order_items`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `order_id` (INT FK ➔ `orders.id` ON DELETE CASCADE)
+   - `menu_item_id` (INT FK ➔ `menu_items.id` ON DELETE RESTRICT)
+   - `item_name` (VARCHAR 150)
+   - `quantity` (INT)
+   - `unit_price` (DECIMAL 10,2)
+   - `gst_rate` (DECIMAL 5,2)
+   - `gst_amount` (DECIMAL 10,2)
+   - `total_price` (DECIMAL 10,2)
 
-### STEP 3: Deploy Frontend to Vercel
-
-1. **Log in to Vercel**:
-   - Visit [Vercel](https://vercel.com) and sign in with your GitHub account.
-2. **Import Repository**:
-   - Click **"Add New..." ➔ "Project"**.
-   - Select your `cafeteria_preorder_system` GitHub repository.
-3. **Configure Project Settings**:
-   - **Project Name**: `cafeflow`
-   - **Framework Preset**: `Vite`
-   - **Root Directory**: Click **Edit** and select `client`
-   - **Build Command**: `npm run build` (detected automatically)
-   - **Output Directory**: `dist` (detected automatically)
-   - **Install Command**: `npm install` (detected automatically)
-4. **Set Environment Variable**:
-   Under **"Environment Variables"**, add:
-
-   | Key | Value | Description |
-   | :--- | :--- | :--- |
-   | `VITE_API_URL` | `https://your-cafeflow-backend.onrender.com/api` | Your Render backend API endpoint from Step 2 |
-
-5. **Deploy**:
-   - Click **"Deploy"**.
-   - Vercel will install dependencies, run `vite build`, and publish your production deployment.
-   - The included `client/vercel.json` automatically configures SPA routing rewrites so direct navigation and refreshes on routes like `/my-orders` and `/staff` work cleanly without 404s.
-
-6. **Update Render `CLIENT_URL`**:
-   - Copy your Vercel deployment URL (e.g. `https://cafeflow-ps62.vercel.app`).
-   - Go back to Render ➔ `cafeflow-backend` ➔ **Environment**.
-   - Update `CLIENT_URL` to:
-     ```
-     https://cafeflow-ps62.vercel.app,http://localhost:5173
-     ```
-   - Render will automatically trigger a redeploy with the updated CORS policy.
+6. **`order_status_history`**:
+   - `id` (INT PK, AUTO_INCREMENT)
+   - `order_id` (INT FK ➔ `orders.id` ON DELETE CASCADE)
+   - `status` (VARCHAR 50)
+   - `timestamp` (TIMESTAMP)
+   - `note` (VARCHAR 255)
+   - `updated_by` (INT NULL)
+   - `updated_by_name` (VARCHAR 100)
 
 ---
 
-## 🔑 Default Accounts (Auto-Seeded on First Run)
+## ⚡ Core Business & Concurrency Logic
 
-The server automatically detects an empty database and seeds the menu items, pickup slots, and initial accounts:
+1. **ACID Transaction & Stock Locking**:
+   - Order placement executes inside a single MySQL transaction (`conn.beginTransaction()`).
+   - Row-level lock acquired via `SELECT ... FOR UPDATE` on both the selected pickup slot and all ordered menu items.
+   - Remaining stock and slot capacity are validated atomically. If any item has insufficient stock or slot is full, the entire transaction rolls back (`conn.rollback()`), guaranteeing zero negative stock and zero overselling.
+
+2. **Strict Customer Data Isolation**:
+   - Customer identity is extracted exclusively from verified JWT payload (`req.user.id`).
+   - Any client-submitted `user_id`, `customer_id`, or spoofed email in request bodies is rejected or ignored.
+   - Customers can only query their own orders (`/api/orders/my-orders`). Direct ID access by another customer triggers an automatic `403 Forbidden` IDOR block.
+
+3. **Configurable GST Calculations**:
+   - GST is configurable per item (`base_price * gst_rate / 100`).
+   - Line totals and tax summaries are calculated and stored on the server to prevent client-side price tampering.
+
+4. **Crowd Management & Load Indicators**:
+   - Live cafeteria load indicator (`Low Load`, `Moderate Load`, `High Load`) calculated dynamically from active slot bookings.
+   - Smart recommendation engine suggests the next best available alternative slot if a preferred time slot is full.
+
+---
+
+## 🔌 REST API Reference
+
+### Health (`/api/health`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/health` | Ping server, uptime, MySQL database connection status | Public |
+
+### Authentication (`/api/auth`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/register` | Register new customer account (email normalized to lowercase) | Public |
+| `POST` | `/api/auth/login` | Authenticate customer/staff, return JWT token | Public |
+| `GET` | `/api/auth/me` | Fetch authenticated user profile | Bearer JWT |
+
+### Menu (`/api/menu`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/menu` | List menu items (supports query filters `category`, `search`) | Public |
+| `GET` | `/api/menu/categories` | Get distinct food categories | Public |
+| `GET` | `/api/menu/:id` | Get individual menu item details | Public |
+| `POST` | `/api/menu` | Add new menu item | Staff Only |
+| `PUT` | `/api/menu/:id` | Update menu item details, pricing, availability | Staff Only |
+| `DELETE` | `/api/menu/:id` | Delete menu item | Staff Only |
+| `PATCH` | `/api/menu/:id/stock` | Adjust stock count | Staff Only |
+
+### Pickup Slots (`/api/slots`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/slots` | List pickup slots for date + load indicator & alternative slot | Public |
+| `POST` | `/api/slots` | Create new pickup slot | Staff Only |
+| `PUT` | `/api/slots/:id` | Update slot capacity, time, or availability | Staff Only |
+| `DELETE` | `/api/slots/:id` | Delete pickup slot | Staff Only |
+| `POST` | `/api/slots/generate-day` | Batch-generate 15-min slots for a given date | Staff Only |
+
+### Orders (`/api/orders`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/orders` | Place order (ACID transaction with stock & capacity row locks) | Customer |
+| `GET` | `/api/orders/my-orders` | Fetch authenticated customer's isolated order history | Customer |
+| `GET` | `/api/orders` | Fetch active kitchen orders queue | Staff Only |
+| `GET` | `/api/orders/:id` | Get order details with timeline status history | Authenticated |
+| `PATCH` | `/api/orders/:id/status` | Advance status (`Placed` ➔ `Preparing` ➔ `Ready` ➔ `Collected`) | Staff Only |
+| `PUT` | `/api/orders/:id/status` | Update order status (PUT alias) | Staff Only |
+
+### Staff Analytics (`/api/analytics`)
+| Method | Route | Description | Auth |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/analytics` | Real-time business telemetry: today's revenue, GST, hourly load, popular food, low-stock restock batches | Staff Only |
+| `GET` | `/api/analytics/today` | Summary metrics for current operational day | Staff Only |
+| `GET` | `/api/analytics/weekly` | 7-day orders and revenue historical trends | Staff Only |
+
+---
+
+## 🔑 Default Accounts (Auto-Seeded)
+
+The database automatically initializes and seeds on first startup if tables are empty:
 
 | Role | Email | Password | Access Privileges |
 | :--- | :--- | :--- | :--- |
-| **Demo Customer** | `customer@cafeflow.com` | `Customer@123` | Pre-ordering, private cart, time-slot reservation, order tracking |
-| **Cafeteria Staff** | `staff@cafeflow.com` | `Staff@123` | Kitchen Queue, Orders Board, Live Stock Controls, Slot Management, Analytics |
+| **Cafeteria Staff** | `staff@cafeflow.com` | `Staff@123` | Kitchen Queue, Order Progress, Menu CRUD, Stock Adjustments, Business Analytics |
+| **Demo Customer** | `customer@cafeflow.com` | `Customer@123` | Menu Browsing, Private Cart, Slot Reservation, Isolated Order History |
 | **Any New Customer** | Any valid email | Any password (≥6 chars) | Self-registration via UI; completely isolated account data |
 
 ---
 
-## 💻 Local Development Setup
+## ⚙️ Environment Variables
 
-To run CaféFlow locally on your development machine:
+### Backend Configuration (`server/.env`)
 
-1. **Clone repository**:
-   ```bash
-   git clone https://github.com/your-username/cafeteria_preorder_system.git
-   cd cafeteria_preorder_system
-   ```
+```env
+PORT=5000
+NODE_ENV=development
 
-2. **Install all dependencies**:
-   ```bash
-   npm run install:all
-   ```
+# MySQL Database Connection (mysql2 pool)
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=cafeflow
+DB_USER=root
+DB_PASSWORD=your_mysql_password_here
 
-3. **Start local servers**:
-   ```bash
-   # Terminal 1: Backend Server (Port 5000)
-   cd server
-   npm run dev
+# JWT Authentication
+JWT_SECRET=cafeflow_hackathon_super_secret_jwt_key_2026
 
-   # Terminal 2: Frontend Client (Port 5173)
-   cd client
-   npm run dev
-   ```
+# Allowed Frontend Origins for CORS (comma-separated)
+CLIENT_URL=http://localhost:5173,https://your-cafeflow.vercel.app
+```
 
-4. **Open in browser**:
-   - Client: [http://localhost:5173](http://localhost:5173)
-   - Backend Healthcheck: [http://localhost:5000/api/health](http://localhost:5000/api/health)
+### Frontend Configuration (`client/.env`)
+
+```env
+# Backend API Base URL (empty for local Vite dev proxy, or full URL in production)
+VITE_API_URL=http://localhost:5000/api
+```
 
 ---
 
-## 🧪 Verification & Testing Commands
+## 💻 Local Setup & Execution Guide
 
-Run automated verification suites from the `server/` directory:
+### 1. Prerequisites
+- **Node.js**: v18.0.0 or higher
+- **MySQL Server**: v8.0 or higher running locally (or via Docker/remote)
+
+### 2. Database Initialization
+Ensure your MySQL server is running, then run:
 
 ```bash
-# 1. Verify dynamic customer account data isolation & zero IDOR/BOLA
-node test_dynamic_isolation.js
+# Optional: manual creation via MySQL CLI
+mysql -u root -p < server/database/schema.sql
+mysql -u root -p < server/database/seed.sql
+```
+*(Note: If the `cafeflow` database does not exist, the server automatically creates the database, executes `schema.sql`, and seeds initial data on startup).*
 
-# 2. Verify all API endpoints, overselling prevention, and innovations
-node test_e2e_api.js
+### 3. Install Dependencies
+```bash
+# Root helper to install both backend and frontend dependencies
+npm run install:all
 
-# 3. Verify security, malformed email rejections, and RBAC boundaries
-node test_security_isolation.js
+# Or individually:
+cd server && npm install
+cd ../client && npm install
 ```
 
-To build and validate the frontend production bundle:
+### 4. Configure Environment
+Create `server/.env` based on `server/.env.example`:
+```bash
+cp server/.env.example server/.env
+```
+Update `DB_HOST`, `DB_PORT`, `DB_USER`, and `DB_PASSWORD` to match your local MySQL configuration.
+
+### 5. Run the Application
+
+```bash
+# From project root, run both frontend and backend concurrently:
+npm run dev
+
+# Or start services in separate terminals:
+# Terminal 1: Backend Server (Port 5000)
+cd server
+npm start
+
+# Terminal 2: Frontend Client (Port 5173)
+cd client
+npm run dev
+```
+
+### 6. Access the Application
+- **Frontend App**: [http://localhost:5173](http://localhost:5173)
+- **Backend Health Check**: [http://localhost:5000/api/health](http://localhost:5000/api/health)
+
+---
+
+## 🧪 Automated Test Verification
+
+Run verification suites from the `server/` directory:
+
+```bash
+cd server
+
+# 1. Verify dynamic customer account isolation, IDOR prevention & RBAC
+node test_dynamic_isolation.js
+
+# 2. Verify all API endpoints, atomic stock deductions, and staff analytics
+node test_e2e_api.js
+
+# 3. Verify security boundaries, input validation, and email normalization
+node test_security_isolation.js
+
+# 4. Verify authentication flow and JWT validation
+node test_auth.js
+```
+
+Validate production build:
 ```bash
 cd client
 npm run build
 ```
+
+---
+
+## 🚀 Production Deployment
+
+### Database (Managed MySQL)
+- Use any managed MySQL 8.0 instance (e.g. AWS RDS, DigitalOcean Managed Databases, PlanetScale, Aiven, or Railway MySQL).
+- Obtain host, port, database name, username, and password.
+- Run `server/database/schema.sql` (or allow `initDB()` to create tables on first run).
+
+### Backend (Render / Railway / VPS)
+- **Root Directory**: `server`
+- **Build Command**: `npm install`
+- **Start Command**: `npm start`
+- **Environment Variables**:
+  - `NODE_ENV=production`
+  - `PORT=10000` (or host-assigned port)
+  - `DB_HOST=<remote-mysql-host>`
+  - `DB_PORT=3306`
+  - `DB_NAME=cafeflow`
+  - `DB_USER=<mysql-user>`
+  - `DB_PASSWORD=<mysql-password>`
+  - `JWT_SECRET=<strong-random-secret-key>`
+  - `CLIENT_URL=https://your-cafeflow.vercel.app`
+
+### Frontend (Vercel)
+- **Root Directory**: `client`
+- **Framework Preset**: `Vite`
+- **Build Command**: `npm run build`
+- **Output Directory**: `dist`
+- **Environment Variables**:
+  - `VITE_API_URL=https://your-backend-domain.com/api`
+- The included [vercel.json](file:///c:/Users/Mohamed%20Salman/Desktop/cafeteria_preorder_system/client/vercel.json) configures SPA rewrites for direct navigation to `/my-orders` and `/staff`.
